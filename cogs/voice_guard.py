@@ -10,22 +10,26 @@ class VoiceGuard(commands.Cog):
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
-        # Only trigger when someone is fully disconnected (not just moved)
         if before.channel is not None and after.channel is None:
+            print(f"🔊 {member.name} disconnected from {before.channel.name}")
             guild = member.guild
-            await asyncio.sleep(1.5)  # Wait for audit log to update
+            await asyncio.sleep(1.5)
 
             async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_disconnect):
                 time_diff = (datetime.now(timezone.utc) - entry.created_at).total_seconds()
+                print(f"📋 Audit log: {entry.user.name} | time_diff: {time_diff:.2f}s")
 
                 if time_diff < 10:
                     executor = entry.user
+                    print(f"👤 Executor: {executor.name} | bot: {executor.bot} | admin: {executor.guild_permissions.administrator}")
 
-                    # Skip bots and admins
                     if executor.bot or executor.guild_permissions.administrator:
+                        print("⛔ Skipped: executor is bot or admin")
                         return
 
                     role = guild.get_role(MOD_ROLE_ID)
+                    print(f"🎭 Role found: {role} | has role: {role in executor.roles if role else 'N/A'}")
+
                     if role and role in executor.roles:
                         try:
                             print(f"⚠️  {executor.name} disconnected a member. Applying penalty.")
