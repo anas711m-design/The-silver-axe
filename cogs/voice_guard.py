@@ -8,7 +8,7 @@ from config import MOD_ROLE_ID, PENALTY_SECONDS
 class VoiceGuard(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        # Tracks disconnect counts: {executor_id: [timestamp, timestamp, ...]}
+        # Tracks disconnect timestamps per executor: {executor_id: [timestamp, ...]}
         self.disconnect_tracker = defaultdict(list)
 
     async def apply_penalty(self, executor, guild, reason):
@@ -27,8 +27,7 @@ class VoiceGuard(commands.Cog):
             print(f"⛔ Skipped: {executor.name} does not have the mod role or role not found.")
 
     # ---------------------------------------------------------------
-    # FEATURE 1: Single disconnect → penalty
-    # FEATURE 2: 3 disconnects within 60 seconds → penalty
+    # FEATURE 1: 3 disconnects within 2 minutes → penalty
     # ---------------------------------------------------------------
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
@@ -61,33 +60,27 @@ class VoiceGuard(commands.Cog):
                     # Track this disconnect
                     self.disconnect_tracker[executor.id].append(now)
 
-                    # Keep only disconnects from the last 60 seconds
+                    # Keep only disconnects from the last 120 seconds (2 minutes)
                     self.disconnect_tracker[executor.id] = [
                         t for t in self.disconnect_tracker[executor.id]
-                        if now - t <= 60
+                        if now - t <= 120
                     ]
 
                     count = len(self.disconnect_tracker[executor.id])
-                    print(f"📊 {executor.name} disconnect count in last 60s: {count}")
+                    print(f"📊 {executor.name} disconnect count in last 2 min: {count}/3")
 
                     if count >= 3:
-                        # 3+ disconnects in 60s → penalty
                         self.disconnect_tracker[executor.id].clear()
-                        await self.apply_penalty(executor, guild, "Disconnected 3+ members in 60 seconds")
-                    else:
-                        # Single disconnect → penalty
-                        await self.apply_penalty(executor, guild, "Disconnected a member")
+                        await self.apply_penalty(executor, guild, "Disconnected 3+ members in 2 minutes")
 
     # ---------------------------------------------------------------
-    # FEATURE 3: Deleting a voice channel with people in it → penalty
+    # FEATURE 2: Deleting a voice channel with people in it → penalty
     # ---------------------------------------------------------------
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel):
-        # Only care about voice channels
         if not isinstance(channel, discord.VoiceChannel):
             return
 
-        # Check if there were members in it (Discord keeps member cache briefly)
         member_count = len(channel.members)
         print(f"🗑️  Voice channel deleted: {channel.name} | Members inside: {member_count}")
 
