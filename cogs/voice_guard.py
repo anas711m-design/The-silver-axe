@@ -3,27 +3,57 @@ from discord.ext import commands
 from datetime import datetime, timezone
 import asyncio
 from collections import defaultdict
-from config import MOD_ROLE_ID, PENALTY_SECONDS
+from config import MOD_ROLE_ID, PENALTY_SECONDS, PENALIZED_ROLE_ID
 
 class VoiceGuard(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.disconnect_tracker = defaultdict(list)
+        self.global_penalty_counter = 0  # Global counter across all users
 
     async def apply_penalty(self, executor, guild, reason):
-        role = guild.get_role(MOD_ROLE_ID)
-        if role and role in executor.roles:
-            try:
-                print(f"⚠️  Penalty applied to {executor.name} | Reason: {reason}")
-                await executor.remove_roles(role, reason=reason)
-                await asyncio.sleep(PENALTY_SECONDS)
-                await executor.add_roles(role, reason="Penalty finished.")
-                print(f"✅ Role restored to {executor.name}.")
-            except Exception as e:
-                print(f"❌ Error: {e}")
-        else:
-            print(f"⛔ Skipped: {executor.name} does not have the mod role or role not found.")
+        mod_role = guild.get_role(MOD_ROLE_ID)
+        penalized_role = guild.get_role(PENALIZED_ROLE_ID)
 
+        if not mod_role or mod_role not in executor.roles:
+            print(f"⛔ Skipped: {executor.name} does not have the mod role.")
+            return
+
+        # Increment global counter
+        self.global_penalty_counter += 1
+        penalty_number = self.global_penalty_counter
+
+        # Save original nickname to restore later
+        original_nickname = executor.nick
+
+        try:
+            print(f"⚠️  Penalty #{penalty_number} applied to {executor.name} | Reason: {reason}")
+
+            # Change nickname
+            await executor.edit(nick=f"ضحية الرأس الفضي #{penalty_number}", reason=reason)
+
+            # Remove mod role, add penalized role
+            await executor.remove_roles(mod_role, reason=reason)
+            if penalized_role:
+                await executor.add_roles(penalized_role, reason="Penalty applied")
+
+            # Wait for penalty duration
+            await asyncio.sleep(PENALTY_SECONDS)
+
+            # Restore everything
+            await executor.edit(nick=original_nickname, reason="Penalty finished.")
+            await executor.add_roles(mod_role, reason="Penalty finished.")
+            if penalized_role:
+                await executor.remove_roles(penalized_role, reason="Penalty finished.")
+
+            print(f"✅ Penalty #{penalty_number} finished. {executor.name} restored.")
+
+        except Exception as e:
+            print(f"❌ Error during penalty #{penalty_number} for {executor.name}: {e}")
+
+    # ---------------------------------------------------------------
+    # FEATURE 1: 3 disconnects within 2 minutes → penalty
+    # ---------------------------------------------------------------
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         if before.channel is not None and after.channel is None:
@@ -35,7 +65,6 @@ class VoiceGuard(commands.Cog):
                 time_diff = (datetime.now(timezone.utc) - entry.created_at).total_seconds()
                 print(f"📋 Audit log: {entry.user.name} | time_diff: {time_diff:.2f}s")
 
-                # Increased window to 90 seconds to catch slow audit logs
                 if time_diff < 90:
                     executor = entry.user
 
@@ -45,14 +74,15 @@ class VoiceGuard(commands.Cog):
                         print("⛔ Skipped: executor is bot or admin")
                         return
 
-                    role = guild.get_role(MOD_ROLE_ID)
-                    print(f"🎭 Role found: {role} | has role: {role in executor.roles if role else 'N/A'}")
+                    mod_role = guild.get_role(MOD_ROLE_ID)
+                    print(f"🎭 Role found: {mod_role} | has role: {mod_role in executor.roles if mod_role else 'N/A'}")
 
-                    if not role or role not in executor.roles:
+                    if not mod_role or mod_role not in executor.roles:
                         return
 
                     now = datetime.now(timezone.utc).timestamp()
 
+                    # Track this disconnect
                     self.disconnect_tracker[executor.id].append(now)
 
                     # Keep only disconnects from the last 120 seconds (2 minutes)
@@ -65,10 +95,14 @@ class VoiceGuard(commands.Cog):
                     print(f"📊 {executor.name} disconnect count in last 2 min: {count}/3")
 
                     if count >= 3:
-                        self.disconnect_tracker[executor.id].clear()
+                        # Don't clear counter so it keeps accumulating
+                        self.disconnect_tracker[executor.id] = []
                         await self.apply_penalty(executor, guild, "Disconnected 3+ members in 2 minutes")
-                    break  # Only process the most recent audit entry
+                    break
 
+    # ---------------------------------------------------------------
+    # FEATURE 2: Deleting a voice channel with people in it → penalty
+    # ---------------------------------------------------------------
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel):
         if not isinstance(channel, discord.VoiceChannel):
