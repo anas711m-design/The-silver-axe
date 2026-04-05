@@ -8,11 +8,9 @@ from config import MOD_ROLE_ID, PENALTY_SECONDS
 class VoiceGuard(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        # Tracks disconnect timestamps per executor: {executor_id: [timestamp, ...]}
         self.disconnect_tracker = defaultdict(list)
 
     async def apply_penalty(self, executor, guild, reason):
-        """Remove mod role for PENALTY_SECONDS then restore it."""
         role = guild.get_role(MOD_ROLE_ID)
         if role and role in executor.roles:
             try:
@@ -26,9 +24,6 @@ class VoiceGuard(commands.Cog):
         else:
             print(f"⛔ Skipped: {executor.name} does not have the mod role or role not found.")
 
-    # ---------------------------------------------------------------
-    # FEATURE 1: 3 disconnects within 2 minutes → penalty
-    # ---------------------------------------------------------------
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         if before.channel is not None and after.channel is None:
@@ -36,11 +31,12 @@ class VoiceGuard(commands.Cog):
             guild = member.guild
             await asyncio.sleep(1.5)
 
-            async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_disconnect):
+            async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_disconnect):
                 time_diff = (datetime.now(timezone.utc) - entry.created_at).total_seconds()
                 print(f"📋 Audit log: {entry.user.name} | time_diff: {time_diff:.2f}s")
 
-                if time_diff < 10:
+                # Increased window to 90 seconds to catch slow audit logs
+                if time_diff < 90:
                     executor = entry.user
 
                     print(f"👤 Executor: {executor.name} | bot: {executor.bot} | admin: {executor.guild_permissions.administrator}")
@@ -57,7 +53,6 @@ class VoiceGuard(commands.Cog):
 
                     now = datetime.now(timezone.utc).timestamp()
 
-                    # Track this disconnect
                     self.disconnect_tracker[executor.id].append(now)
 
                     # Keep only disconnects from the last 120 seconds (2 minutes)
@@ -72,10 +67,8 @@ class VoiceGuard(commands.Cog):
                     if count >= 3:
                         self.disconnect_tracker[executor.id].clear()
                         await self.apply_penalty(executor, guild, "Disconnected 3+ members in 2 minutes")
+                    break  # Only process the most recent audit entry
 
-    # ---------------------------------------------------------------
-    # FEATURE 2: Deleting a voice channel with people in it → penalty
-    # ---------------------------------------------------------------
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel):
         if not isinstance(channel, discord.VoiceChannel):
@@ -95,7 +88,7 @@ class VoiceGuard(commands.Cog):
             time_diff = (datetime.now(timezone.utc) - entry.created_at).total_seconds()
             print(f"📋 Audit log: {entry.user.name} | time_diff: {time_diff:.2f}s")
 
-            if time_diff < 10:
+            if time_diff < 90:
                 executor = entry.user
 
                 print(f"👤 Executor: {executor.name} | bot: {executor.bot} | admin: {executor.guild_permissions.administrator}")
